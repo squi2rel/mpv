@@ -281,6 +281,21 @@ Available audio output drivers are:
     ``--ao-null-format``
         Force the audio output format the AO will accept. If unset accepts any.
 
+``callback``
+    Calls the libmpv audio output callback registered with
+    ``mpv_set_audio_output_callback()``. This output is only useful for libmpv
+    users and is never auto-selected. It outputs decoded and filtered
+    interleaved S16LE stereo PCM to the callback instead of system audio.
+
+    The following global options are supported by this audio output:
+
+    ``--ao-callback-buffer``
+        Maximum queued callback audio in seconds. If the callback falls behind,
+        the oldest queued audio is dropped (default: 0.02).
+
+    ``--ao-callback-outburst``
+        Simulated chunk size in stereo samples (default: 256).
+
 ``pcm``
     Raw PCM/WAVE file writer audio output
 

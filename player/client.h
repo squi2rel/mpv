@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "mpv/audio_cb.h"
 #include "mpv/stream_cb.h"
 #include "misc/bstr.h"
 
@@ -53,5 +54,9 @@ void kill_video_async(struct mp_client_api *client_api);
 
 bool mp_streamcb_lookup(struct mpv_global *g, const char *protocol,
                         void **out_user_data, mpv_stream_cb_open_ro_fn *out_fn);
+
+bool mp_client_audio_output_cb_registered(struct mp_client_api *ca);
+bool mp_client_audio_output_cb_call(struct mp_client_api *ca, const void *data,
+                                    const mpv_audio_output_cb_info *info);
 
 #endif

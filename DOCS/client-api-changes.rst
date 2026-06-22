@@ -32,6 +32,9 @@ API changes
 
 ::
 
+ --- mpv 0.41.0 ---
+ 2.6    - add audio_cb.h with mpv_set_audio_output_callback(), used with
+          --ao=callback to receive decoded/filtered S16LE stereo PCM.
  --- mpv 0.40.0 ---
  2.5    - Deprecate MPV_RENDER_PARAM_AMBIENT_LIGHT. no replacement.
  --- mpv 0.39.0 ---

@@ -71,6 +71,7 @@ sources = files(
     'audio/fmt-conversion.c',
     'audio/format.c',
     'audio/out/ao.c',
+    'audio/out/ao_callback.c',
     'audio/out/ao_lavc.c',
     'audio/out/ao_null.c',
     'audio/out/ao_pcm.c',
@@ -1824,8 +1825,9 @@ if get_option('libmpv')
     pkg.generate(libmpv, version: client_api_version,
                  description: 'mpv media player client library')
 
-    headers = ['include/mpv/client.h', 'include/mpv/render.h',
-               'include/mpv/render_gl.h', 'include/mpv/stream_cb.h']
+    headers = ['include/mpv/audio_cb.h', 'include/mpv/client.h',
+               'include/mpv/render.h', 'include/mpv/render_gl.h',
+               'include/mpv/stream_cb.h']
     install_headers(headers, subdir: 'mpv')
 
     # Allow projects to build with libmpv by cloning into ./subprojects/mpv

@@ -49,6 +49,7 @@ extern const struct ao_driver audio_out_jack;
 extern const struct ao_driver audio_out_openal;
 extern const struct ao_driver audio_out_opensles;
 extern const struct ao_driver audio_out_null;
+extern const struct ao_driver audio_out_callback;
 extern const struct ao_driver audio_out_alsa;
 extern const struct ao_driver audio_out_wasapi;
 extern const struct ao_driver audio_out_pcm;
@@ -105,6 +106,7 @@ static const struct ao_driver * const audio_out_drivers[] = {
     &audio_out_sndio,
 #endif
     &audio_out_null,
+    &audio_out_callback,
 #if HAVE_COREAUDIO
     &audio_out_coreaudio_exclusive,
 #endif

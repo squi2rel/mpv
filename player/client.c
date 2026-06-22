@@ -81,6 +81,12 @@ struct mp_client_api {
     int num_custom_protocols;
 
     struct mpv_render_context *render_context;
+
+    mp_cond audio_output_cb_done;
+    mpv_audio_output_cb_fn audio_output_cb;
+    void *audio_output_cb_userdata;
+    int audio_output_cb_active;
+    bool audio_output_cb_changing;
 };
 
 struct observe_property {
@@ -184,6 +190,7 @@ void mp_clients_init(struct MPContext *mpctx)
     };
     mpctx->global->client_api = mpctx->clients;
     mp_mutex_init(&mpctx->clients->lock);
+    mp_cond_init(&mpctx->clients->audio_output_cb_done);
 }
 
 void mp_clients_destroy(struct MPContext *mpctx)
@@ -199,6 +206,8 @@ void mp_clients_destroy(struct MPContext *mpctx)
         abort();
     }
 
+    mp_assert(!mpctx->clients->audio_output_cb_active);
+    mp_cond_destroy(&mpctx->clients->audio_output_cb_done);
     mp_mutex_destroy(&mpctx->clients->lock);
     talloc_free(mpctx->clients);
     mpctx->clients = NULL;
@@ -2188,6 +2197,58 @@ mp_client_api_acquire_render_context(struct mp_client_api *ca)
         res = ca->render_context;
     mp_mutex_unlock(&ca->lock);
     return res;
+}
+
+// audio output callback
+
+void mpv_set_audio_output_callback(mpv_handle *ctx, mpv_audio_output_cb_fn cb,
+                                   void *userdata)
+{
+    struct mp_client_api *clients = ctx->clients;
+
+    mp_mutex_lock(&clients->lock);
+    while (clients->audio_output_cb_changing)
+        mp_cond_wait(&clients->audio_output_cb_done, &clients->lock);
+    clients->audio_output_cb_changing = true;
+    while (clients->audio_output_cb_active)
+        mp_cond_wait(&clients->audio_output_cb_done, &clients->lock);
+    clients->audio_output_cb = cb;
+    clients->audio_output_cb_userdata = userdata;
+    clients->audio_output_cb_changing = false;
+    mp_cond_broadcast(&clients->audio_output_cb_done);
+    mp_mutex_unlock(&clients->lock);
+}
+
+bool mp_client_audio_output_cb_registered(struct mp_client_api *ca)
+{
+    mp_mutex_lock(&ca->lock);
+    bool res = ca->audio_output_cb && !ca->audio_output_cb_changing;
+    mp_mutex_unlock(&ca->lock);
+    return res;
+}
+
+bool mp_client_audio_output_cb_call(struct mp_client_api *ca, const void *data,
+                                    const mpv_audio_output_cb_info *info)
+{
+    mp_mutex_lock(&ca->lock);
+    if (!ca->audio_output_cb || ca->audio_output_cb_changing) {
+        mp_mutex_unlock(&ca->lock);
+        return false;
+    }
+
+    mpv_audio_output_cb_fn cb = ca->audio_output_cb;
+    void *userdata = ca->audio_output_cb_userdata;
+    ca->audio_output_cb_active += 1;
+    mp_mutex_unlock(&ca->lock);
+
+    cb(userdata, data, info);
+
+    mp_mutex_lock(&ca->lock);
+    ca->audio_output_cb_active -= 1;
+    if (!ca->audio_output_cb_active)
+        mp_cond_broadcast(&ca->audio_output_cb_done);
+    mp_mutex_unlock(&ca->lock);
+    return true;
 }
 
 // stream_cb
