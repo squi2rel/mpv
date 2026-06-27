@@ -245,6 +245,7 @@ sources = files(
     'video/out/gpu/video_shaders.c',
     'video/out/libmpv_sw.c',
     'video/out/vo.c',
+    'video/out/vo_callback.c',
     'video/out/vo_gpu.c',
     'video/out/vo_image.c',
     'video/out/vo_lavc.c',
@@ -1827,7 +1828,7 @@ if get_option('libmpv')
 
     headers = ['include/mpv/audio_cb.h', 'include/mpv/client.h',
                'include/mpv/render.h', 'include/mpv/render_gl.h',
-               'include/mpv/stream_cb.h']
+               'include/mpv/stream_cb.h', 'include/mpv/video_cb.h']
     install_headers(headers, subdir: 'mpv')
 
     # Allow projects to build with libmpv by cloning into ./subprojects/mpv

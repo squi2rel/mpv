@@ -348,6 +348,19 @@ Available video output drivers are:
         Simulate display FPS. This artificially limits how many frames the
         VO accepts per second.
 
+``callback``
+    Calls the libmpv video output callback registered with
+    ``mpv_set_video_output_callback()``. This output is only useful for libmpv
+    users and is never auto-selected. It renders the final video image,
+    including subtitles and OSD, to opaque RGBA8 CPU memory and sends it to the
+    callback instead of displaying it in a system window.
+
+    The following global option is supported by this video output:
+
+    ``--vo-callback-buffer=<frames>``
+        Maximum queued callback video frames. If the callback falls behind, the
+        oldest queued frame is dropped (default: 2).
+
 ``caca``
     Color ASCII art video output driver that works on a text console.
 

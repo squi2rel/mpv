@@ -1943,7 +1943,8 @@ static void play_current_file(struct MPContext *mpctx)
 
     if (!mpctx->vo_chain && !mpctx->ao_chain && opts->stream_auto_sel) {
         MP_FATAL(mpctx, "No video or audio streams selected.\n");
-        mpctx->error_playing = MPV_ERROR_NOTHING_TO_PLAY;
+        if (mpctx->error_playing >= 0)
+            mpctx->error_playing = MPV_ERROR_NOTHING_TO_PLAY;
         goto terminate_playback;
     }
 

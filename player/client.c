@@ -87,6 +87,12 @@ struct mp_client_api {
     void *audio_output_cb_userdata;
     int audio_output_cb_active;
     bool audio_output_cb_changing;
+
+    mp_cond video_output_cb_done;
+    mpv_video_output_cb_fn video_output_cb;
+    void *video_output_cb_userdata;
+    int video_output_cb_active;
+    bool video_output_cb_changing;
 };
 
 struct observe_property {
@@ -191,6 +197,7 @@ void mp_clients_init(struct MPContext *mpctx)
     mpctx->global->client_api = mpctx->clients;
     mp_mutex_init(&mpctx->clients->lock);
     mp_cond_init(&mpctx->clients->audio_output_cb_done);
+    mp_cond_init(&mpctx->clients->video_output_cb_done);
 }
 
 void mp_clients_destroy(struct MPContext *mpctx)
@@ -208,6 +215,8 @@ void mp_clients_destroy(struct MPContext *mpctx)
 
     mp_assert(!mpctx->clients->audio_output_cb_active);
     mp_cond_destroy(&mpctx->clients->audio_output_cb_done);
+    mp_assert(!mpctx->clients->video_output_cb_active);
+    mp_cond_destroy(&mpctx->clients->video_output_cb_done);
     mp_mutex_destroy(&mpctx->clients->lock);
     talloc_free(mpctx->clients);
     mpctx->clients = NULL;
@@ -2247,6 +2256,58 @@ bool mp_client_audio_output_cb_call(struct mp_client_api *ca, const void *data,
     ca->audio_output_cb_active -= 1;
     if (!ca->audio_output_cb_active)
         mp_cond_broadcast(&ca->audio_output_cb_done);
+    mp_mutex_unlock(&ca->lock);
+    return true;
+}
+
+// video output callback
+
+void mpv_set_video_output_callback(mpv_handle *ctx, mpv_video_output_cb_fn cb,
+                                   void *userdata)
+{
+    struct mp_client_api *clients = ctx->clients;
+
+    mp_mutex_lock(&clients->lock);
+    while (clients->video_output_cb_changing)
+        mp_cond_wait(&clients->video_output_cb_done, &clients->lock);
+    clients->video_output_cb_changing = true;
+    while (clients->video_output_cb_active)
+        mp_cond_wait(&clients->video_output_cb_done, &clients->lock);
+    clients->video_output_cb = cb;
+    clients->video_output_cb_userdata = userdata;
+    clients->video_output_cb_changing = false;
+    mp_cond_broadcast(&clients->video_output_cb_done);
+    mp_mutex_unlock(&clients->lock);
+}
+
+bool mp_client_video_output_cb_registered(struct mp_client_api *ca)
+{
+    mp_mutex_lock(&ca->lock);
+    bool res = ca->video_output_cb && !ca->video_output_cb_changing;
+    mp_mutex_unlock(&ca->lock);
+    return res;
+}
+
+bool mp_client_video_output_cb_call(struct mp_client_api *ca, const void *data,
+                                    const mpv_video_output_cb_info *info)
+{
+    mp_mutex_lock(&ca->lock);
+    if (!ca->video_output_cb || ca->video_output_cb_changing) {
+        mp_mutex_unlock(&ca->lock);
+        return false;
+    }
+
+    mpv_video_output_cb_fn cb = ca->video_output_cb;
+    void *userdata = ca->video_output_cb_userdata;
+    ca->video_output_cb_active += 1;
+    mp_mutex_unlock(&ca->lock);
+
+    cb(userdata, data, info);
+
+    mp_mutex_lock(&ca->lock);
+    ca->video_output_cb_active -= 1;
+    if (!ca->video_output_cb_active)
+        mp_cond_broadcast(&ca->video_output_cb_done);
     mp_mutex_unlock(&ca->lock);
     return true;
 }

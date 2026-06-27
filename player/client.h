@@ -6,6 +6,7 @@
 
 #include "mpv/audio_cb.h"
 #include "mpv/stream_cb.h"
+#include "mpv/video_cb.h"
 #include "misc/bstr.h"
 
 struct MPContext;
@@ -58,5 +59,9 @@ bool mp_streamcb_lookup(struct mpv_global *g, const char *protocol,
 bool mp_client_audio_output_cb_registered(struct mp_client_api *ca);
 bool mp_client_audio_output_cb_call(struct mp_client_api *ca, const void *data,
                                     const mpv_audio_output_cb_info *info);
+
+bool mp_client_video_output_cb_registered(struct mp_client_api *ca);
+bool mp_client_video_output_cb_call(struct mp_client_api *ca, const void *data,
+                                    const mpv_video_output_cb_info *info);
 
 #endif

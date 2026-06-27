@@ -54,6 +54,7 @@ extern const struct vo_driver video_out_gpu;
 extern const struct vo_driver video_out_gpu_next;
 extern const struct vo_driver video_out_libmpv;
 extern const struct vo_driver video_out_null;
+extern const struct vo_driver video_out_callback;
 extern const struct vo_driver video_out_image;
 extern const struct vo_driver video_out_lavc;
 extern const struct vo_driver video_out_caca;
@@ -102,6 +103,7 @@ static const struct vo_driver *const video_out_drivers[] =
 #endif
     &video_out_libmpv,
     &video_out_null,
+    &video_out_callback,
 
     // should not be auto-selected
     &video_out_image,

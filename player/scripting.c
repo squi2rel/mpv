@@ -39,6 +39,7 @@
 #include "mpv/client.h"
 #include "mpv/render.h"
 #include "mpv/stream_cb.h"
+#include "mpv/video_cb.h"
 
 extern const struct mp_scripting mp_scripting_lua;
 extern const struct mp_scripting mp_scripting_cplugin;
@@ -366,6 +367,7 @@ static void init_sym_table(struct mp_script_args *args, void *lib) {
     INIT_SYM(mpv_hook_continue);
     INIT_SYM(mpv_get_wakeup_pipe);
     INIT_SYM(mpv_set_audio_output_callback);
+    INIT_SYM(mpv_set_video_output_callback);
 
     INIT_SYM(mpv_render_context_create);
     INIT_SYM(mpv_render_context_set_parameter);
