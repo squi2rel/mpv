@@ -1,1 +1,3 @@
-add `--ao=callback`, `--ao-callback-buffer`, and `--ao-callback-outburst`
+add `--ao=callback`, `--ao-callback-buffer`, and `--ao-callback-outburst`;
+the callback receives decoded/filtered interleaved S16LE PCM, including
+multichannel layouts and decoded PCM from Dolby sources

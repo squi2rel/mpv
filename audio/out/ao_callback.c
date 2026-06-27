@@ -26,6 +26,8 @@
 
 #include "mpv_talloc.h"
 
+#include "audio/chmap.h"
+#include "audio/chmap_sel.h"
 #include "audio/format.h"
 #include "common/common.h"
 #include "common/global.h"
@@ -140,7 +142,20 @@ static int init(struct ao *ao)
     }
 
     ao->format = AF_FORMAT_S16;
-    ao->channels = (struct mp_chmap)MP_CHMAP_INIT_STEREO;
+
+    struct mp_chmap_sel sel = {0};
+    mp_chmap_sel_add_waveext(&sel);
+    if (!ao_chmap_sel_adjust(ao, &sel, &ao->channels)) {
+        MP_ERR(ao, "Unsupported channel layout.\n");
+        return -1;
+    }
+
+    if (ao->channels.num <= 0 ||
+        ao->channels.num > MPV_AUDIO_OUTPUT_CB_MAX_CHANNELS)
+    {
+        MP_ERR(ao, "Unsupported channel count.\n");
+        return -1;
+    }
 
     p->last_time = mp_time_sec();
     p->queue_limit_samples = MPMAX(1, (int)(ao->samplerate * p->bufferlen + 0.5));
@@ -342,7 +357,10 @@ static MP_THREAD_VOID callback_thread(void *arg)
             .bytes = chunk->bytes,
             .sequence = chunk->sequence,
             .dropped_samples = dropped_samples,
+            .channel_mask = mp_chmap_to_waveext(&ao->channels),
         };
+        for (int n = 0; n < ao->channels.num; n++)
+            info.channel_layout[n] = ao->channels.speaker[n];
         mp_client_audio_output_cb_call(ao->global->client_api, chunk->data, &info);
         talloc_free(chunk);
     }

@@ -34,11 +34,42 @@
 
 #define NS_PER_S INT64_C(1000000000)
 
+#define SPK_BIT(s) (UINT64_C(1) << MPV_AUDIO_OUTPUT_CB_SPEAKER_ ## s)
+
+static const int layout_stereo[] = {
+    MPV_AUDIO_OUTPUT_CB_SPEAKER_FL,
+    MPV_AUDIO_OUTPUT_CB_SPEAKER_FR,
+};
+
+static const int layout_5_1[] = {
+    MPV_AUDIO_OUTPUT_CB_SPEAKER_FL,
+    MPV_AUDIO_OUTPUT_CB_SPEAKER_FR,
+    MPV_AUDIO_OUTPUT_CB_SPEAKER_FC,
+    MPV_AUDIO_OUTPUT_CB_SPEAKER_LFE,
+    MPV_AUDIO_OUTPUT_CB_SPEAKER_BL,
+    MPV_AUDIO_OUTPUT_CB_SPEAKER_BR,
+};
+
+static const int layout_7_1[] = {
+    MPV_AUDIO_OUTPUT_CB_SPEAKER_FL,
+    MPV_AUDIO_OUTPUT_CB_SPEAKER_FR,
+    MPV_AUDIO_OUTPUT_CB_SPEAKER_FC,
+    MPV_AUDIO_OUTPUT_CB_SPEAKER_LFE,
+    MPV_AUDIO_OUTPUT_CB_SPEAKER_BL,
+    MPV_AUDIO_OUTPUT_CB_SPEAKER_BR,
+    MPV_AUDIO_OUTPUT_CB_SPEAKER_SL,
+    MPV_AUDIO_OUTPUT_CB_SPEAKER_SR,
+};
+
 struct cb_state {
     atomic_uint_fast64_t callbacks;
     atomic_uint_fast64_t last_sequence;
     atomic_uint_fast64_t dropped_samples;
     atomic_bool bad_info;
+    int expected_channels;
+    uint64_t expected_channel_mask;
+    int expected_channel_layout[MPV_AUDIO_OUTPUT_CB_MAX_CHANNELS];
+    bool check_channel_layout;
     bool slow;
 };
 
@@ -88,15 +119,32 @@ static void write_le32(uint8_t *dst, uint32_t value)
     dst[3] = value >> 24;
 }
 
-static void make_wav_source(struct wav_source *source, int milliseconds)
+static void write_pcm_guid(uint8_t *dst)
+{
+    write_le32(dst + 0, 0x00000001);
+    write_le16(dst + 4, 0x0000);
+    write_le16(dst + 6, 0x0010);
+    dst[8] = 0x80;
+    dst[9] = 0x00;
+    dst[10] = 0x00;
+    dst[11] = 0xaa;
+    dst[12] = 0x00;
+    dst[13] = 0x38;
+    dst[14] = 0x9b;
+    dst[15] = 0x71;
+}
+
+static void make_wav_source(struct wav_source *source, int milliseconds,
+                            int channels, uint32_t channel_mask)
 {
     const int sample_rate = 48000;
-    const int channels = 2;
     const int bytes_per_sample = 2;
-    const size_t header_size = 44;
+    bool extensible = channels > 2 || channel_mask;
+    const size_t fmt_size = extensible ? 40 : 16;
+    const size_t header_size = 12 + 8 + fmt_size + 8;
     int samples = sample_rate * milliseconds / 1000;
 
-    if (samples <= 0)
+    if (samples <= 0 || channels <= 0)
         fail("invalid audio source duration\n");
 
     uint64_t pcm_bytes = (uint64_t)samples * channels * bytes_per_sample;
@@ -112,15 +160,25 @@ static void make_wav_source(struct wav_source *source, int milliseconds)
     write_le32(data + 4, (uint32_t)(total_size - 8));
     memcpy(data + 8, "WAVE", 4);
     memcpy(data + 12, "fmt ", 4);
-    write_le32(data + 16, 16);
-    write_le16(data + 20, 1);
+    write_le32(data + 16, (uint32_t)fmt_size);
+    write_le16(data + 20, extensible ? 0xfffe : 1);
     write_le16(data + 22, channels);
     write_le32(data + 24, sample_rate);
     write_le32(data + 28, sample_rate * channels * bytes_per_sample);
     write_le16(data + 32, channels * bytes_per_sample);
     write_le16(data + 34, bytes_per_sample * 8);
-    memcpy(data + 36, "data", 4);
-    write_le32(data + 40, (uint32_t)pcm_bytes);
+
+    uint8_t *chunk = data + 36;
+    if (extensible) {
+        write_le16(chunk + 0, 22);
+        write_le16(chunk + 2, bytes_per_sample * 8);
+        write_le32(chunk + 4, channel_mask);
+        write_pcm_guid(chunk + 8);
+        chunk += 24;
+    }
+
+    memcpy(chunk + 0, "data", 4);
+    write_le32(chunk + 4, (uint32_t)pcm_bytes);
 
     uint8_t *out = data + header_size;
     for (int n = 0; n < samples; n++) {
@@ -142,6 +200,82 @@ static void free_wav_source(struct wav_source *source)
     free(source->data);
     *source = (struct wav_source){0};
 }
+
+static void make_repeated_memory_source(struct wav_source *source,
+                                        const uint8_t *data, size_t size,
+                                        int repeats)
+{
+    if (repeats <= 0 || size > SIZE_MAX / (size_t)repeats)
+        fail("invalid repeated audio source\n");
+
+    size_t total = size * (size_t)repeats;
+    source->data = malloc(total);
+    if (!source->data)
+        fail("failed to allocate audio source\n");
+
+    for (int n = 0; n < repeats; n++)
+        memcpy(source->data + (size_t)n * size, data, size);
+    source->size = total;
+}
+
+static void expect_audio(struct cb_state *state, int channels,
+                         uint64_t channel_mask, const int *channel_layout)
+{
+    state->expected_channels = channels;
+    state->expected_channel_mask = channel_mask;
+    state->check_channel_layout = !!channel_layout;
+
+    if (channel_layout) {
+        for (int n = 0; n < channels; n++)
+            state->expected_channel_layout[n] = channel_layout[n];
+    }
+}
+
+static const uint8_t ac3_5_1[] = {
+    0x0b, 0x77, 0x43, 0xb9, 0x08, 0x40, 0xeb, 0xf8, 0x40, 0x3e, 0xfe, 0x00,
+    0x42, 0x02, 0x02, 0x08, 0x40, 0x40, 0x41, 0x08, 0x08, 0x08, 0x21, 0x01,
+    0x01, 0x04, 0x20, 0x20, 0x20, 0x55, 0x5e, 0x3e, 0x7c, 0xf9, 0xf3, 0xe7,
+    0xcf, 0x9f, 0x3e, 0x7c, 0xf9, 0xf7, 0xfc, 0xea, 0xf9, 0xf3, 0xe7, 0xcf,
+    0x9f, 0x3e, 0x7c, 0xf9, 0xf1, 0xff, 0x3a, 0xbe, 0x7c, 0xf9, 0xf3, 0xe7,
+    0xcf, 0x9f, 0x3e, 0x7c, 0x7f, 0xce, 0xaf, 0x9f, 0x3e, 0x7c, 0xf9, 0xf3,
+    0xe7, 0xcf, 0x9f, 0x1f, 0xf3, 0xab, 0xe7, 0xcf, 0x9f, 0x3e, 0x7c, 0xf9,
+    0xf3, 0xe7, 0xc7, 0xfc, 0xea, 0xf9, 0xf3, 0xe7, 0xcf, 0x9f, 0x3e, 0x7c,
+    0xf9, 0xf1, 0xff, 0x3a, 0xe5, 0xfd, 0xb4, 0x89, 0x12, 0x24, 0x48, 0x91,
+    0x24, 0x00, 0x07, 0x78, 0xd6, 0xb4, 0x07, 0x6b, 0x40, 0x77, 0x8d, 0x68,
+    0x0e, 0xd6, 0xb4, 0x07, 0x78, 0xd6, 0x80, 0xe0, 0xf8, 0x00, 0x00, 0x00,
+    0x07, 0x78, 0xd6, 0xb4, 0x07, 0x6b, 0x40, 0x77, 0x8d, 0x68, 0x0e, 0xd6,
+    0xb4, 0x07, 0x78, 0xd6, 0x80, 0xe0, 0xf8, 0x00, 0x00, 0x00, 0x07, 0x78,
+    0xd6, 0xb4, 0x07, 0x6b, 0x40, 0x77, 0x8d, 0x68, 0x0e, 0xd6, 0xb4, 0x07,
+    0x78, 0xd6, 0x80, 0xe0, 0xf8, 0x00, 0x00, 0x00, 0x07, 0x78, 0xd6, 0xb4,
+    0x07, 0x6b, 0x40, 0x77, 0x8d, 0x68, 0x0e, 0xd6, 0xb4, 0x07, 0x78, 0xd6,
+    0x80, 0xe0, 0xf8, 0x00, 0x00, 0x00, 0x07, 0x78, 0xd6, 0xb4, 0x07, 0x6b,
+    0x40, 0x77, 0x8d, 0x68, 0x0e, 0xd6, 0xb4, 0x07, 0x78, 0xd6, 0x80, 0xe0,
+    0xf8, 0x00, 0x00, 0x00, 0x07, 0x78, 0xd6, 0xb4, 0x07, 0x6b, 0x40, 0x77,
+    0x8d, 0x68, 0x0e, 0xd6, 0xb4, 0x07, 0x78, 0xd6, 0x80, 0xe0, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x6c, 0x94, 0x0b, 0x77, 0x43, 0xb9, 0x08, 0x40, 0xeb, 0xf8,
+    0x40, 0x3e, 0xfe, 0x00, 0x42, 0x02, 0x02, 0x08, 0x40, 0x40, 0x41, 0x08,
+    0x08, 0x08, 0x21, 0x01, 0x01, 0x04, 0x20, 0x20, 0x20, 0x55, 0x5e, 0x3e,
+    0x7c, 0xf9, 0xf3, 0xe7, 0xcf, 0x9f, 0x3e, 0x7c, 0xf9, 0xf7, 0xfc, 0xea,
+    0xf9, 0xf3, 0xe7, 0xcf, 0x9f, 0x3e, 0x7c, 0xf9, 0xf1, 0xff, 0x3a, 0xbe,
+    0x7c, 0xf9, 0xf3, 0xe7, 0xcf, 0x9f, 0x3e, 0x7c, 0x7f, 0xce, 0xaf, 0x9f,
+    0x3e, 0x7c, 0xf9, 0xf3, 0xe7, 0xcf, 0x9f, 0x1f, 0xf3, 0xab, 0xe7, 0xcf,
+    0x9f, 0x3e, 0x7c, 0xf9, 0xf3, 0xe7, 0xc7, 0xfc, 0xea, 0xf9, 0xf3, 0xe7,
+    0xcf, 0x9f, 0x3e, 0x7c, 0xf9, 0xf1, 0xff, 0x3a, 0xe5, 0xfd, 0xb4, 0x89,
+    0x12, 0x24, 0x48, 0x91, 0x24, 0x00, 0x07, 0x78, 0xd6, 0xb4, 0x07, 0x6b,
+    0x40, 0x77, 0x8d, 0x68, 0x0e, 0xd6, 0xb4, 0x07, 0x78, 0xd6, 0x80, 0xe0,
+    0xf8, 0x00, 0x00, 0x00, 0x07, 0x78, 0xd6, 0xb4, 0x07, 0x6b, 0x40, 0x77,
+    0x8d, 0x68, 0x0e, 0xd6, 0xb4, 0x07, 0x78, 0xd6, 0x80, 0xe0, 0xf8, 0x00,
+    0x00, 0x00, 0x07, 0x78, 0xd6, 0xb4, 0x07, 0x6b, 0x40, 0x77, 0x8d, 0x68,
+    0x0e, 0xd6, 0xb4, 0x07, 0x78, 0xd6, 0x80, 0xe0, 0xf8, 0x00, 0x00, 0x00,
+    0x07, 0x78, 0xd6, 0xb4, 0x07, 0x6b, 0x40, 0x77, 0x8d, 0x68, 0x0e, 0xd6,
+    0xb4, 0x07, 0x78, 0xd6, 0x80, 0xe0, 0xf8, 0x00, 0x00, 0x00, 0x07, 0x78,
+    0xd6, 0xb4, 0x07, 0x6b, 0x40, 0x77, 0x8d, 0x68, 0x0e, 0xd6, 0xb4, 0x07,
+    0x78, 0xd6, 0x80, 0xe0, 0xf8, 0x00, 0x00, 0x00, 0x07, 0x78, 0xd6, 0xb4,
+    0x07, 0x6b, 0x40, 0x77, 0x8d, 0x68, 0x0e, 0xd6, 0xb4, 0x07, 0x78, 0xd6,
+    0x80, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x6c, 0x94,
+};
 
 static int64_t wav_read(void *cookie, char *buf, uint64_t nbytes)
 {
@@ -213,12 +347,33 @@ static void audio_cb(void *userdata, const void *data,
                      const mpv_audio_output_cb_info *info)
 {
     struct cb_state *state = userdata;
+    int expected_channels = state->expected_channels;
     bool bad = !data || !info ||
                info->format != MPV_AUDIO_OUTPUT_CB_FORMAT_S16LE ||
                info->sample_rate <= 0 ||
-               info->channels != 2 ||
+               expected_channels <= 0 ||
+               info->channels != expected_channels ||
+               info->channels <= 0 ||
+               info->channels > MPV_AUDIO_OUTPUT_CB_MAX_CHANNELS ||
                info->samples <= 0 ||
                info->bytes != (uint64_t)info->samples * info->channels * 2;
+
+    if (!bad) {
+        if (state->expected_channel_mask) {
+            bad = info->channel_mask != state->expected_channel_mask;
+        } else {
+            bad = !info->channel_mask;
+        }
+    }
+
+    if (!bad && state->check_channel_layout) {
+        for (int n = 0; n < expected_channels; n++) {
+            if (info->channel_layout[n] != state->expected_channel_layout[n]) {
+                bad = true;
+                break;
+            }
+        }
+    }
 
     uint64_t count = atomic_load(&state->callbacks);
     uint64_t last_sequence = atomic_load(&state->last_sequence);
@@ -287,35 +442,31 @@ static bool wait_callbacks(struct cb_state *state, uint64_t count,
         if (event->event_id == MPV_EVENT_END_FILE) {
             *end = *(mpv_event_end_file *)event->data;
             *got_end = true;
-            return atomic_load(&state->callbacks) >= count;
         }
     }
 
     return atomic_load(&state->callbacks) >= count;
 }
 
-static void load_wav(void)
+static void load_audio(const char *path)
 {
-    const char *cmd[] = {"loadfile", "audcb://audio.wav", NULL};
+    const char *cmd[] = {"loadfile", path, NULL};
     command(cmd);
 }
 
-static void test_audio_callback(void)
+static void run_callback_playback(struct wav_source *source, const char *path,
+                                  struct cb_state *state, const char *what)
 {
-    struct cb_state state = {0};
-    struct wav_source source = {0};
-
     create_context();
-    make_wav_source(&source, 1000);
-    register_audio_stream(&source);
-    mpv_set_audio_output_callback(ctx, audio_cb, &state);
+    register_audio_stream(source);
+    mpv_set_audio_output_callback(ctx, audio_cb, state);
     initialize_context();
 
-    load_wav();
+    load_audio(path);
     mpv_event_end_file end = {0};
     bool got_end = false;
-    if (!wait_callbacks(&state, 1, &end, &got_end))
-        fail("audio callback was not called\n");
+    if (!wait_callbacks(state, 1, &end, &got_end))
+        fail("%s callback was not called\n", what);
 
     if (!got_end)
         end = wait_end_file();
@@ -323,10 +474,61 @@ static void test_audio_callback(void)
         fail("expected EOF, got end-file reason %d error %d\n", end.reason, end.error);
 
     mpv_set_audio_output_callback(ctx, NULL, NULL);
-    if (atomic_load(&state.bad_info))
-        fail("audio callback received invalid info\n");
+    if (atomic_load(&state->bad_info))
+        fail("%s callback received invalid info\n", what);
 
     destroy_context();
+}
+
+static void test_audio_callback(void)
+{
+    struct cb_state state = {0};
+    struct wav_source source = {0};
+
+    make_wav_source(&source, 1000, 2, 0);
+    expect_audio(&state, 2, SPK_BIT(FL) | SPK_BIT(FR), layout_stereo);
+    run_callback_playback(&source, "audcb://audio.wav", &state, "audio");
+
+    free_wav_source(&source);
+}
+
+static void test_audio_callback_5_1(void)
+{
+    struct cb_state state = {0};
+    struct wav_source source = {0};
+
+    uint64_t mask = SPK_BIT(FL) | SPK_BIT(FR) | SPK_BIT(FC) | SPK_BIT(LFE) |
+                    SPK_BIT(BL) | SPK_BIT(BR);
+    make_wav_source(&source, 500, 6, mask);
+    expect_audio(&state, 6, mask, layout_5_1);
+    run_callback_playback(&source, "audcb://audio.wav", &state, "5.1 audio");
+
+    free_wav_source(&source);
+}
+
+static void test_audio_callback_7_1(void)
+{
+    struct cb_state state = {0};
+    struct wav_source source = {0};
+
+    uint64_t mask = SPK_BIT(FL) | SPK_BIT(FR) | SPK_BIT(FC) | SPK_BIT(LFE) |
+                    SPK_BIT(BL) | SPK_BIT(BR) | SPK_BIT(SL) | SPK_BIT(SR);
+    make_wav_source(&source, 500, 8, mask);
+    expect_audio(&state, 8, mask, layout_7_1);
+    run_callback_playback(&source, "audcb://audio.wav", &state, "7.1 audio");
+
+    free_wav_source(&source);
+}
+
+static void test_dolby_decode_pcm(void)
+{
+    struct cb_state state = {0};
+    struct wav_source source = {0};
+
+    make_repeated_memory_source(&source, ac3_5_1, sizeof(ac3_5_1), 64);
+    expect_audio(&state, 6, 0, NULL);
+    run_callback_playback(&source, "audcb://audio.ac3", &state, "Dolby PCM");
+
     free_wav_source(&source);
 }
 
@@ -335,11 +537,11 @@ static void test_missing_registration(void)
     struct wav_source source = {0};
 
     create_context();
-    make_wav_source(&source, 100);
+    make_wav_source(&source, 100, 2, 0);
     register_audio_stream(&source);
     initialize_context();
 
-    load_wav();
+    load_audio("audcb://audio.wav");
     mpv_event_end_file end = wait_end_file();
     if (end.reason != MPV_END_FILE_REASON_ERROR ||
         end.error != MPV_ERROR_AO_INIT_FAILED)
@@ -357,14 +559,15 @@ static void test_slow_callback_drops(void)
     struct cb_state state = {.slow = true};
     struct wav_source source = {0};
 
+    expect_audio(&state, 2, SPK_BIT(FL) | SPK_BIT(FR), layout_stereo);
     create_context();
-    make_wav_source(&source, 600);
+    make_wav_source(&source, 600, 2, 0);
     register_audio_stream(&source);
     set_option_string_checked("ao-callback-buffer", "0.02");
     mpv_set_audio_output_callback(ctx, audio_cb, &state);
     initialize_context();
 
-    load_wav();
+    load_audio("audcb://audio.wav");
     mpv_event_end_file end = {0};
     bool got_end = false;
     if (!wait_callbacks(&state, 1, &end, &got_end))
@@ -395,6 +598,12 @@ int main(int argc, char *argv[])
     const char *fmt = "================ TEST: %s ================\n";
     printf(fmt, "test_audio_callback");
     test_audio_callback();
+    printf(fmt, "test_audio_callback_5_1");
+    test_audio_callback_5_1();
+    printf(fmt, "test_audio_callback_7_1");
+    test_audio_callback_7_1();
+    printf(fmt, "test_dolby_decode_pcm");
+    test_dolby_decode_pcm();
     printf(fmt, "test_missing_registration");
     test_missing_registration();
     printf(fmt, "test_slow_callback_drops");

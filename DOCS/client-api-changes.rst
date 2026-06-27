@@ -36,7 +36,7 @@ API changes
  2.7    - add video_cb.h with mpv_set_video_output_callback(), used with
           --vo=callback to receive composited RGBA8 video frames.
  2.6    - add audio_cb.h with mpv_set_audio_output_callback(), used with
-          --ao=callback to receive decoded/filtered S16LE stereo PCM.
+          --ao=callback to receive decoded/filtered S16LE PCM.
  --- mpv 0.40.0 ---
  2.5    - Deprecate MPV_RENDER_PARAM_AMBIENT_LIGHT. no replacement.
  --- mpv 0.39.0 ---
